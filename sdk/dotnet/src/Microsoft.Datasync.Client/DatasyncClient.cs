@@ -156,14 +156,24 @@ namespace Microsoft.Datasync.Client
         public string InstallationId { get => HttpClient.InstallationId; }
 
         /// <summary>
+        /// The number of pending operations, or null if the offline store has not been defined.
+        /// </summary>
+        public long? PendingOperations { get => SyncContext?.PendingOperations; }
+
+        /// <summary>
         /// The serializer to use for serializing and deserializing content.
         /// </summary>
-        internal ServiceSerializer Serializer { get; } = new();
+        public ServiceSerializer Serializer { get; } = new();
 
         /// <summary>
         /// The synchronization context.
         /// </summary>
         internal SyncContext SyncContext { get; }
+
+        /// <summary>
+        /// An event delegate that allows the app to monitor synchronization events.
+        /// </summary>
+        public event EventHandler<SynchronizationEventArgs> SynchronizationProgress;
 
         /// <summary>
         /// Returns a reference to an offline table, providing untyped (JSON) data
@@ -290,6 +300,15 @@ namespace Microsoft.Datasync.Client
                 throw new InvalidOperationException("An offline store must be specified before doing offline operations.");
             }
             await SyncContext.PushItemsAsync(tables.ToArray(), options, cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Sends a synchronization event to the consumers.
+        /// </summary>
+        /// <param name="eventArgs">The event arguments.</param>
+        internal void SendSynchronizationEvent(SynchronizationEventArgs eventArgs)
+        {
+            SynchronizationProgress?.Invoke(this, eventArgs);
         }
 
         #region IDisposable

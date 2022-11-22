@@ -100,6 +100,11 @@ namespace Microsoft.Datasync.Client.Offline
         internal IPushContext PushContext { get; set; }
 
         /// <summary>
+        /// The number of pending operations in the operations queue.
+        /// </summary>
+        internal long PendingOperations { get => OperationsQueue.PendingOperations; }
+
+        /// <summary>
         /// Initialize the synchronization context for this offline store.
         /// </summary>
         /// <param name="cancellationToken">A <see cref="CancellationToken"/> to observe.</param>
@@ -236,7 +241,7 @@ namespace Microsoft.Datasync.Client.Offline
             Arguments.IsNotNull(options, nameof(options));
             await EnsureContextIsInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-            var table = ServiceClient.GetRemoteTable(tableName);
+            var table = new RemoteTable(tableName, ServiceClient); // We need the RemoteTable, not the IRemoteTable here.
             var queryId = options.QueryId ?? GetQueryIdFromQuery(tableName, query);
             var queryDescription = QueryDescription.Parse(tableName, query);
             string[] relatedTables = options.PushOtherTables ? null : new string[] { tableName };
@@ -265,15 +270,27 @@ namespace Microsoft.Datasync.Client.Offline
             var deltaToken = await DeltaTokenStore.GetDeltaTokenAsync(tableName, queryId, cancellationToken).ConfigureAwait(false);
             var deltaTokenFilter = new BinaryOperatorNode(BinaryOperatorKind.GreaterThan, new MemberAccessNode(null, SystemProperties.JsonUpdatedAtProperty), new ConstantNode(deltaToken));
             queryDescription.Filter = queryDescription.Filter == null ? deltaTokenFilter : new BinaryOperatorNode(BinaryOperatorKind.And, queryDescription.Filter, deltaTokenFilter);
+            queryDescription.IncludeTotalCount = true;
+            queryDescription.Ordering.Add(new OrderByNode(new MemberAccessNode(null, SystemProperties.JsonUpdatedAtProperty), true));
             Dictionary<string, string> parameters = new()
             {
                 { ODataOptions.IncludeDeleted, "true" }
             };
 
             var odataString = queryDescription.ToODataString(parameters);
-            await foreach (var instance in table.GetAsyncItems(odataString).WithCancellation(cancellationToken))
+            SendPullStartedEvent(tableName);
+            long itemCount = 0;
+            long expectedItems = -1;
+            var enumerable = table.GetAsyncItems(odataString);
+            await foreach (var instance in enumerable)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+
+                // If we have not read the expectedItem count yet, then read it from the pageable.
+                if (expectedItems == -1 && enumerable is FuncAsyncPageable<JToken> pageable)
+                {
+                    expectedItems = pageable.Count ?? -1;
+                }
 
                 if (instance is not JObject item)
                 {
@@ -292,6 +309,7 @@ namespace Microsoft.Datasync.Client.Offline
                     throw new InvalidOperationException("Received an item for which there is a pending operation.");
                 }
                 DateTimeOffset? updatedAt = ServiceSerializer.GetUpdatedAt(item)?.ToUniversalTime();
+                SendItemWillBeStoredEvent(tableName, itemId, itemCount, expectedItems);
                 if (ServiceSerializer.IsDeleted(item))
                 {
                     await OfflineStore.DeleteAsync(tableName, new[] { itemId }, cancellationToken).ConfigureAwait(false);
@@ -300,12 +318,15 @@ namespace Microsoft.Datasync.Client.Offline
                 {
                     await OfflineStore.UpsertAsync(tableName, new[] { item }, true, cancellationToken).ConfigureAwait(false);
                 }
+                itemCount++;
+                SendItemWasStoredEvent(tableName, itemId, itemCount, expectedItems);
 
                 if (updatedAt.HasValue)
                 {
                     await DeltaTokenStore.SetDeltaTokenAsync(tableName, queryId, updatedAt.Value, cancellationToken).ConfigureAwait(false);
                 }
             }
+            SendPullFinishedEvent(tableName, itemCount);
         }
 
         /// <summary>
@@ -396,15 +417,20 @@ namespace Microsoft.Datasync.Client.Offline
             cancellationToken.Register(() => batch.Abort(PushStatus.CancelledByToken));
 
             // Process the queue - only use the QueueHandler (new logic) if maxThreads > 1
+            SendPushStartedEvent();
             var maxThreads = GetMaximumParallelOperations(options);
             if (maxThreads == 1)
             {
                 try
                 {
+                    long itemCount = 0;
                     TableOperation operation = await OperationsQueue.PeekAsync(0, tableNames, cancellationToken).ConfigureAwait(false);
                     while (operation != null)
                     {
-                        _ = await ExecutePushOperationAsync(operation, batch, true, cancellationToken).ConfigureAwait(false);
+                        SendItemWillBePushedEvent(operation.TableName, operation.ItemId, itemCount);
+                        bool isSuccessful = await ExecutePushOperationAsync(operation, batch, true, cancellationToken).ConfigureAwait(false);
+                        itemCount++;
+                        SendItemWasPushedEvent(operation.TableName, operation.ItemId, itemCount, isSuccessful);
                         if (batch.AbortReason.HasValue)
                         {
                             break;
@@ -416,12 +442,19 @@ namespace Microsoft.Datasync.Client.Offline
                 {
                     batch.OtherErrors.Add(ex);
                 }
-            } 
+            }
             else
             {
+                var itemCount = new long[] { 0 };
                 QueueHandler queueHandler = new(maxThreads, async (operation) =>
                 {
-                    _ = await ExecutePushOperationAsync(operation, batch, true, cancellationToken).ConfigureAwait(false);
+                    SendItemWillBePushedEvent(operation.TableName, operation.ItemId, itemCount[0]);
+                    bool isSuccessful = await ExecutePushOperationAsync(operation, batch, true, cancellationToken).ConfigureAwait(false);
+                    lock(itemCount) 
+                    {
+                        itemCount[0]++; 
+                    }
+                    SendItemWasPushedEvent(operation.ItemId, operation.ItemId, itemCount[0], isSuccessful);
                 });
                 try
                 {
@@ -450,6 +483,7 @@ namespace Microsoft.Datasync.Client.Offline
             {
                 batch.OtherErrors.Add(new OfflineStoreException("Failed to read errors from the local store.", ex));
             }
+            SendPushFinishedEvent(batchStatus != PushStatus.Complete);
 
             // If the push did not complete successfully, then throw a PushFailedException.
             if (batchStatus != PushStatus.Complete || batch.HasErrors(errors))
@@ -757,6 +791,95 @@ namespace Microsoft.Datasync.Client.Offline
             long pendingOperations = await OperationsQueue.CountPendingOperationsAsync(tableName, cancellationToken).ConfigureAwait(false);
             return pendingOperations > 0;
         }
+
+        #region Eventing Support
+        private void SendPullStartedEvent(string tableName)
+        {
+            ServiceClient.SendSynchronizationEvent(new SynchronizationEventArgs
+            {
+                EventType = SynchronizationEventType.PullStarted,
+                TableName = tableName
+            });
+        }
+
+        private void SendPullFinishedEvent(string tableName, long itemsReceived)
+        {
+            ServiceClient.SendSynchronizationEvent(new SynchronizationEventArgs
+            {
+                EventType = SynchronizationEventType.PullFinished,
+                TableName = tableName,
+                ItemsProcessed = itemsReceived
+            });
+        }
+
+        private void SendPushStartedEvent()
+        {
+            ServiceClient.SendSynchronizationEvent(new SynchronizationEventArgs
+            {
+                EventType = SynchronizationEventType.PushStarted,
+                QueueLength = OperationsQueue.PendingOperations
+            });
+        }
+
+        private void SendPushFinishedEvent(bool success)
+        {
+            ServiceClient.SendSynchronizationEvent(new SynchronizationEventArgs
+            {
+                EventType = SynchronizationEventType.PushFinished,
+                QueueLength = OperationsQueue.PendingOperations,
+                IsSuccessful = success
+            });
+        }
+
+        private void SendItemWillBePushedEvent(string tableName, string itemId, long itemCount)
+        {
+            ServiceClient.SendSynchronizationEvent(new SynchronizationEventArgs
+            {
+                EventType = SynchronizationEventType.ItemWillBePushed,
+                ItemsProcessed = itemCount,
+                QueueLength = OperationsQueue.PendingOperations,
+                TableName = tableName,
+                ItemId = itemId
+            });
+        }
+
+        private void SendItemWasPushedEvent(string tableName, string itemId, long itemCount, bool success)
+        {
+            ServiceClient.SendSynchronizationEvent(new SynchronizationEventArgs
+            {
+                EventType = SynchronizationEventType.ItemWasPushed,
+                ItemsProcessed = itemCount,
+                QueueLength = OperationsQueue.PendingOperations,
+                TableName = tableName,
+                ItemId = itemId,
+                IsSuccessful = success
+            });
+        }
+
+        private void SendItemWillBeStoredEvent(string tableName, string itemId, long itemCount, long expectedItems)
+        {
+            ServiceClient.SendSynchronizationEvent(new SynchronizationEventArgs
+            {
+                EventType = SynchronizationEventType.ItemWillBeStored,
+                ItemsProcessed = itemCount,
+                QueueLength = expectedItems,
+                TableName = tableName,
+                ItemId = itemId
+            });
+        }
+
+        private void SendItemWasStoredEvent(string tableName, string itemId, long itemCount, long expectedItems)
+        {
+            ServiceClient.SendSynchronizationEvent(new SynchronizationEventArgs
+            {
+                EventType = SynchronizationEventType.ItemWasStored,
+                ItemsProcessed = itemCount,
+                QueueLength = expectedItems,
+                TableName = tableName,
+                ItemId = itemId
+            });
+        }
+        #endregion
 
         #region IDisposable
         /// <summary>

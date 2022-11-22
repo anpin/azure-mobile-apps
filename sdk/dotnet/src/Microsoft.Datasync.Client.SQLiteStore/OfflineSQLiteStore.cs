@@ -71,18 +71,10 @@ namespace Microsoft.Datasync.Client.SQLiteStore
             Arguments.IsValidTableName(tableName, true, nameof(tableName));
             Arguments.IsNotNull(tableDefinition, nameof(tableDefinition));
 
-            //if (Initialized)
-            //{
-            //    throw new InvalidOperationException("Cannot define a table after the offline store has been initialized.");
-            //}
             if (!tableMap.ContainsKey(tableName))
             {
                 tableMap.Add(tableName, new TableDefinition(tableName, tableDefinition));
             }
-            //else
-            //{
-            //    throw new InvalidOperationException("Cannot define a table twice");
-            //}
         }
 
         /// <summary>
@@ -183,6 +175,17 @@ namespace Microsoft.Datasync.Client.SQLiteStore
                 }
                 return result;
             }
+        }
+
+        /// <summary>
+        /// Gets the list of offline tables that have been defined.
+        /// </summary>
+        /// <param name="cancellationToken">A <see cref="CancellationToken"/> to observe.</param>
+        /// <returns>A task that returns the list of tables that have been defined.</returns>
+        public override async Task<IList<string>> GetTablesAsync(CancellationToken cancellationToken = default)
+        {
+            await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+            return tableMap.Keys.Where(t => !t.StartsWith("__")).ToList();
         }
 
         /// <summary>
@@ -469,6 +472,18 @@ namespace Microsoft.Datasync.Client.SQLiteStore
                 return table;
             }
             throw new InvalidOperationException($"Table '{tableName}' is not defined.");
+        }
+
+        /// <summary>
+        /// Dispose of the database connection.
+        /// </summary>
+        /// <param name="disposing"></param>
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                DbConnection.Dispose();
+            }
         }
     }
 }
