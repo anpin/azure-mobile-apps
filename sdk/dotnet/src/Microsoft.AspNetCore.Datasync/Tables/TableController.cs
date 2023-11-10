@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft Corporation. All Rights Reserved.
+// Copyright (c) Microsoft Corporation. All Rights Reserved.
 // Licensed under the MIT License.
 
 using Microsoft.AspNetCore.Datasync.Extensions;
@@ -363,7 +363,13 @@ namespace Microsoft.AspNetCore.Datasync
             dataset = dataset
                 .ApplyDataView(AccessControlProvider.GetDataView())
                 .ApplyDeletedView(Request, Options.EnableSoftDelete);
-            var validationSettings = new ODataValidationSettings() { MaxTop = Options.MaxTop };
+            var validationSettings = new ODataValidationSettings() 
+            { 
+                MaxTop = Options.MaxTop,
+                MaxAnyAllExpressionDepth = Options.MaxAnyAllExpressionDepth,
+                MaxExpansionDepth = Options.MaxExpansionDepth,
+                MaxNodeCount = Options.MaxNodeCount,
+            };
             var querySettings = new ODataQuerySettings() { PageSize = Options.PageSize, EnsureStableOrdering = true };
             var queryContext = new ODataQueryContext(EdmModel, typeof(TEntity), new ODataPath());
             var queryOptions = new ODataQueryOptions<TEntity>(queryContext, Request);

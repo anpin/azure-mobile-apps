@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft Corporation. All Rights Reserved.
+// Copyright (c) Microsoft Corporation. All Rights Reserved.
 // Licensed under the MIT License.
 
 using System;
@@ -13,6 +13,9 @@ namespace Microsoft.AspNetCore.Datasync
     {
         private int _pageSize = 100;
         private int _maxTop = 512000;
+        private int _maxAnyAllExpressionDepth = 1;
+        private int _maxExpansionDepth = 2;
+        private int _maxNodeCount = 100;
 
         /// <summary>
         /// The page size of the results returned by a query operation.  This is also the maximum
@@ -43,7 +46,42 @@ namespace Microsoft.AspNetCore.Datasync
                 _maxTop = value;
             }
         }
-
+        public int MaxAnyAllExpressionDepth
+        {
+            get { return _maxAnyAllExpressionDepth; }
+            set
+            {
+                if (value <= 0)
+                {
+                    throw new ArgumentException("MaxAnyAllExpressionDepth value range is 1+", nameof(MaxAnyAllExpressionDepth));
+                }
+                _maxAnyAllExpressionDepth = value;
+            }
+        }
+        public int MaxExpansionDepth 
+        { 
+            get { return _maxExpansionDepth; }
+            set
+            {
+                if (value <= 0)
+                {
+                    throw new ArgumentException("MaxExpansionDepth value range is 1+", nameof(MaxExpansionDepth));
+                }
+                _maxExpansionDepth = value;
+            }
+        }
+        public int MaxNodeCount
+        {
+            get { return _maxNodeCount; }
+            set
+            {
+                if (value < 1)
+                {
+                    throw new ArgumentException("MaxNodeCount value range is 1+", nameof(MaxNodeCount));
+                }
+                _maxNodeCount = value;
+            }
+        }
         /// <summary>
         /// If <c>true</c>, then client-side evaluation of queries is disabled and clients
         /// will get a 500 Internal Server Error if they attempt to use a query that cannot
