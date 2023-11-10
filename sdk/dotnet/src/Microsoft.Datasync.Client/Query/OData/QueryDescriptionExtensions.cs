@@ -26,7 +26,7 @@ namespace Microsoft.Datasync.Client.Query.OData
             if (value.Filter != null)
             {
                 string filterStr = ODataExpressionVisitor.ToODataString(value.Filter);
-                queryFragments.Add($"{ODataOptions.Filter}={filterStr}");
+                queryFragments.Add($"{ODataOptions.Filter}={Uri.EscapeDataString(filterStr)}");
             }
 
             if (value.Ordering.Count > 0)
@@ -47,7 +47,7 @@ namespace Microsoft.Datasync.Client.Query.OData
 
             if (value.Selection.Count > 0)
             {
-                queryFragments.Add($"{ODataOptions.Select}={string.Join(",", value.Selection.Select(Uri.EscapeDataString))}");
+                queryFragments.Add($"{ODataOptions.Select}={string.Join(",", value.Selection.OrderBy(field => field).Select(Uri.EscapeDataString))}");
             }
 
             if (value.IncludeTotalCount)

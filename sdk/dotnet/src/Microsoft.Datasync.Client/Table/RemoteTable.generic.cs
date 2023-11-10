@@ -26,14 +26,17 @@ namespace Microsoft.Datasync.Client.Table
         /// </summary>
         /// <param name="tableName">The name of the table.</param>
         /// <param name="serviceClient">The service client that created this table.</param>
-        internal RemoteTable(string tableName, DatasyncClient serviceClient) : base(tableName, serviceClient)
+        internal RemoteTable(string tableName, DatasyncClient serviceClient, bool isProjection = false) : base(tableName, serviceClient)
         {
-            // ResolveTableName has a side effect of initializing the contract in the contract resolver,
-            // so call it here to ensure initialization.
-            serviceClient.Serializer.ResolveTableName<T>();
+            if (!isProjection)
+            {
+                // ResolveTableName has a side effect of initializing the contract in the contract resolver,
+                // so call it here to ensure initialization.
+                serviceClient.Serializer.ResolveTableName<T>();
 
-            // Ensure that the Id field in T is a String.
-            ServiceSerializer.EnsureIdIsString<T>();
+                // Ensure that the Id field in T is a String.
+                ServiceSerializer.EnsureIdIsString<T>();
+            }
         }
 
         #region IRemoteTable<T>
@@ -43,6 +46,19 @@ namespace Microsoft.Datasync.Client.Table
         /// <returns>A query against the table.</returns>
         public ITableQuery<T> CreateQuery()
             => new TableQuery<T>(this);
+
+        /// <summary>
+        /// Count the number of items that would be returned by the provided query, without returning
+        /// all the values.
+        /// </summary>
+        /// <param name="query">The query to execute.</param>
+        /// <param name="cancellationToken">A <see cref="CancellationToken"/> to observe.</param>
+        /// <returns>A task that returns the number of items that will be in the result set when the query finishes.</returns>
+        public Task<long> CountItemsAsync(ITableQuery<T> query, CancellationToken cancellationToken = default)
+        {
+            Arguments.IsNotNull(query, nameof(query));
+            return CountItemsAsync(((TableQuery<T>)query).ToODataString(true), cancellationToken);
+        }
 
         /// <summary>
         /// Deletes an item from the remote table.
@@ -89,9 +105,20 @@ namespace Microsoft.Datasync.Client.Table
         /// <param name="id">The ID of the item to retrieve.</param>
         /// <param name="cancellationToken">A <see cref="CancellationToken"/> to observe.</param>
         /// <returns>A task that returns the item when complete.</returns>
-        public new async Task<T> GetItemAsync(string id, CancellationToken cancellationToken = default)
+        public new Task<T> GetItemAsync(string id, CancellationToken cancellationToken = default)
+            => GetItemAsync(id, false, cancellationToken);
+
+
+        /// <summary>
+        /// Retrieve an item from the remote table.
+        /// </summary>
+        /// <param name="id">The ID of the item to retrieve.</param>
+        /// <param name="includeDeleted">If <c>true</c>, a soft-deleted item will be returned; if <c>false</c>, GONE is returned.</param>
+        /// <param name="cancellationToken">A <see cref="CancellationToken"/> to observe.</param>
+        /// <returns>A task that returns the item when complete.</returns>
+        public new async Task<T> GetItemAsync(string id, bool includeDeleted, CancellationToken cancellationToken = default)
         {
-            JToken value = await base.GetItemAsync(id, cancellationToken).ConfigureAwait(false);
+            JToken value = await base.GetItemAsync(id, includeDeleted, cancellationToken).ConfigureAwait(false);
             return ServiceClient.Serializer.Deserialize<T>(value);
         }
 
@@ -242,13 +269,6 @@ namespace Microsoft.Datasync.Client.Table
             => CreateQuery().ThenByDescending(keySelector);
 
         /// <summary>
-        /// Returns the result of the query as an <see cref="IAsyncEnumerable{T}"/>.
-        /// </summary>
-        /// <returns>The list of items as an <see cref="IAsyncEnumerable{T}"/></returns>
-        public IAsyncEnumerable<T> ToAsyncEnumerable()
-            => CreateQuery().ToAsyncEnumerable();
-
-        /// <summary>
         /// Applies the specified filter predicate to the source query.
         /// </summary>
         /// <param name="predicate">The filter predicate.</param>
@@ -275,6 +295,22 @@ namespace Microsoft.Datasync.Client.Table
         /// <returns>The composed query object.</returns>
         public ITableQuery<T> WithParameters(IEnumerable<KeyValuePair<string, string>> parameters)
             => CreateQuery().WithParameters(parameters);
+
+
+        /// <summary>
+        /// Count the number of items that would be returned by the provided query, without returning all the values.
+        /// </summary>
+        /// <param name="cancellationToken">A <see cref="CancellationToken"/> to observe.</param>
+        /// <returns>A task that returns the number of items that will be in the result set when the query finishes.</returns>
+        public Task<long> LongCountAsync(CancellationToken cancellationToken = default)
+            => CountItemsAsync("", cancellationToken);
+
+        /// <summary>
+        /// Returns the result of the query as an <see cref="IAsyncEnumerable{T}"/>.
+        /// </summary>
+        /// <returns>The list of items as an <see cref="IAsyncEnumerable{T}"/></returns>
+        public IAsyncEnumerable<T> ToAsyncEnumerable()
+            => CreateQuery().ToAsyncEnumerable();
         #endregion
 
         /// <summary>

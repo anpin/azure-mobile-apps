@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 
 using Microsoft.Datasync.Client.Http;
+using Microsoft.Datasync.Client.Query;
+using Microsoft.Datasync.Client.Query.OData;
 using Microsoft.Datasync.Client.Serialization;
 using Microsoft.Datasync.Client.Utils;
 using Newtonsoft.Json;
@@ -54,6 +56,33 @@ namespace Microsoft.Datasync.Client.Table
         public string TableEndpoint { get; }
 
         /// <summary>
+        /// Count the number of items that would be returned by the provided query, without returning
+        /// all the values.
+        /// </summary>
+        /// <param name="query">The query to execute.</param>
+        /// <returns>A task that returns the number of items that will be in the result set when the query finishes.</returns>
+        public async Task<long> CountItemsAsync(string query, CancellationToken cancellationToken = default)
+        {
+            QueryDescription qd = QueryDescription.Parse(TableName, query);
+            qd.IncludeTotalCount = true;
+            qd.Skip = null;
+            qd.Top = 1;
+            ServiceRequest request = new()
+            {
+                Method = HttpMethod.Get,
+                UriPathAndQuery = $"{TableEndpoint}?{qd.ToODataString()}",
+                EnsureResponseContent = true
+            };
+            var response = await SendRequestAsync(request, cancellationToken).ConfigureAwait(false);
+            long count = -1;
+            if (response is JObject && response[Page.JsonCountProperty]?.Type == JTokenType.Integer)
+            {
+                count = response.Value<long>(Page.JsonCountProperty);
+            }
+            return count;
+        }
+
+        /// <summary>
         /// Deletes an item from the remote table.
         /// </summary>
         /// <param name="instance">The instance to delete from the table.</param>
@@ -87,12 +116,23 @@ namespace Microsoft.Datasync.Client.Table
         /// <param name="cancellationToken">A <see cref="CancellationToken"/> to observe.</param>
         /// <returns>A task that returns the item when complete.</returns>
         public Task<JToken> GetItemAsync(string id, CancellationToken cancellationToken = default)
+            => GetItemAsync(id, false, cancellationToken);
+
+        /// <summary>
+        /// Retrieve an item from the remote table.
+        /// </summary>
+        /// <param name="id">The ID of the item to retrieve.</param>
+        /// <param name="includeDeleted">If <c>true</c>, a soft-deleted item will be returned; if <c>false</c>, GONE is returned.</param>
+        /// <param name="cancellationToken">A <see cref="CancellationToken"/> to observe.</param>
+        /// <returns>A task that returns the item when complete.</returns>
+        public Task<JToken> GetItemAsync(string id, bool includeDeleted, CancellationToken cancellationToken = default)
         {
             Arguments.IsValidId(id, nameof(id));
+            string query = includeDeleted ? "?__includedeleted=true" : string.Empty;
             ServiceRequest request = new()
             {
                 Method = HttpMethod.Get,
-                UriPathAndQuery = $"{TableEndpoint}/{id}",
+                UriPathAndQuery = $"{TableEndpoint}/{id}{query}",
                 EnsureResponseContent = true
             };
             return SendRequestAsync(request, cancellationToken);

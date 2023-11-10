@@ -62,7 +62,7 @@ namespace Microsoft.Datasync.Client.Http
             Arguments.IsNotNull(clientOptions, nameof(clientOptions));
 
             Endpoint = endpoint;
-            InstallationId = clientOptions.InstallationId ?? Platform.InstallationId;
+            InstallationId = clientOptions.InstallationId;
 
             roothandler = CreatePipeline(clientOptions.HttpPipeline ?? Array.Empty<HttpMessageHandler>());
             if (authenticationProvider != null)
@@ -81,7 +81,7 @@ namespace Microsoft.Datasync.Client.Http
                 client.DefaultRequestHeaders.TryAddWithoutValidation(ServiceHeaders.UserAgent, clientOptions.UserAgent);
                 client.DefaultRequestHeaders.Add(ServiceHeaders.InternalUserAgent, clientOptions.UserAgent);
             }
-            if (clientOptions.InstallationId == null || !string.IsNullOrWhiteSpace(clientOptions.InstallationId))
+            if (!string.IsNullOrWhiteSpace(clientOptions.InstallationId))
             {
                 client.DefaultRequestHeaders.Add(ServiceHeaders.InstallationId, InstallationId);
             }
@@ -92,6 +92,14 @@ namespace Microsoft.Datasync.Client.Http
         /// </summary>
         public Uri Endpoint { get; }
 
+        /// <summary>
+        /// The <see cref="HttpClient"/> to use for communication.
+        /// </summary>
+        internal HttpClient HttpClient => client;
+
+        /// <summary>
+        /// The installation ID to send with each request.
+        /// </summary>
         public string InstallationId { get; }
 
         /// <summary>
